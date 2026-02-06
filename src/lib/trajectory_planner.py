@@ -47,8 +47,9 @@ class TrajectoryPlanner(ABC):
         """Compute a trajectory from start to goal avoiding obstacles.
 
         Returns:
-            Nx3 numpy array where each row is [x, y, theta] representing
+            Nx4 numpy array where each row is [x, y, theta, dt] representing
             the planned trajectory, or None if no valid path exists.
+            dt represents the time duration to reach the next point.
         """
         ...
 
@@ -66,7 +67,7 @@ class TrajectoryPlanner(ABC):
         """Get the current planned trajectory.
 
         Returns:
-            Nx3 numpy array where each row is [x, y, theta], or None if
+            Nx4 numpy array where each row is [x, y, theta, dt], or None if
             no trajectory has been computed yet.
         """
         return self.plan()
