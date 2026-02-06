@@ -8,10 +8,6 @@ import pyceres
 DT_MIN = 0.01
 
 
-def s_to_dt(s: float) -> float:
-    return DT_MIN + np.exp(s)
-
-
 def upper_bound(value: float, limit: float, weight: float):
     error = value - limit
     if error < 0:
@@ -157,6 +153,28 @@ class SegmentVelocityCost(pyceres.CostFunction):
         return True
 
 
+class SegmentTimeCost(pyceres.CostFunction):
+    def __init__(self, weight: float):
+        super().__init__()
+        self.weight = weight
+
+        self.set_num_residuals(1)
+        self.set_parameter_block_sizes([1])
+
+    def Evaluate(self, parameters, residuals, jacobians):
+        s = parameters[0][0]
+        dt_part = np.exp(s)
+        t = DT_MIN + dt_part
+
+        residuals[:] = self.weight * t
+
+        if jacobians is not None:
+            if jacobians[0] is not None:
+                jacobians[0][:] = [self.weight * dt_part]
+
+        return True
+
+
 class TEBPlanner(TrajectoryPlanner):
     def __init__(
         self,
@@ -229,7 +247,7 @@ class TEBPlanner(TrajectoryPlanner):
         return np.hstack((xy, theta, dts))
 
     @override
-    def refine(self, iterations: int = 1) -> bool:
+    def refine(self, iterations: int = 10) -> bool:
         if not self.optimization_xy:
             return False
 
@@ -241,6 +259,9 @@ class TEBPlanner(TrajectoryPlanner):
         velocity_cost = SegmentVelocityCost(
             weight=10.0,
             max_v=self.max_v,
+        )
+        time_cost = SegmentTimeCost(
+            weight=10.0,
         )
 
         n_points = len(self.optimization_xy)
@@ -255,6 +276,7 @@ class TEBPlanner(TrajectoryPlanner):
             problem.add_residual_block(obstacle_cost, None, [xy_curr, xy_next])
 
             problem.add_residual_block(velocity_cost, None, [xy_curr, xy_next, dt])
+            problem.add_residual_block(time_cost, None, [dt])
 
         problem.set_parameter_block_constant(self.optimization_xy[0])
         problem.set_parameter_block_constant(self.optimization_xy[-1])
@@ -262,7 +284,7 @@ class TEBPlanner(TrajectoryPlanner):
         # problem.set_parameter_block_constant(self.optimization_theta[-1])
 
         options = pyceres.SolverOptions()
-        options.max_num_iterations = 50
+        options.max_num_iterations = iterations
         options.linear_solver_type = pyceres.LinearSolverType.DENSE_QR
         options.minimizer_progress_to_stdout = False
 
