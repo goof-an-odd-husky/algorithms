@@ -6,7 +6,7 @@ from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
 from matplotlib.collections import PathCollection
 from matplotlib.quiver import Quiver
-from matplotlib.backend_bases import MouseEvent
+from matplotlib.backend_bases import MouseEvent, CloseEvent
 from typing import Optional
 from numpy.typing import NDArray
 
@@ -59,6 +59,8 @@ class TEBVisualizer:
             y_lim: Y-axis limits as (min, max) tuple.
             title: Title for the plot window.
         """
+        self._is_open = True  # Track window state
+
         self.fig, self.ax = plt.subplots(figsize=(10, 6))
         self.ax.set_title(
             f"{title}\nLeft Click: Add Obstacle | Right Click: Remove Obstacle"
@@ -86,10 +88,20 @@ class TEBVisualizer:
         self.quiver = None
 
         self.cid = self.fig.canvas.mpl_connect("button_press_event", self._on_click)
+        self._close_cid = self.fig.canvas.mpl_connect("close_event", self._on_close)
 
         self.ax.legend(loc="upper right")
         plt.ion()
         plt.show()
+
+    @property
+    def is_open(self) -> bool:
+        """Check if the visualization window is still open."""
+        return self._is_open
+
+    def _on_close(self, event: CloseEvent) -> None:
+        """Handle window close event."""
+        self._is_open = False
 
     def set_start_goal(
         self,
@@ -154,6 +166,9 @@ class TEBVisualizer:
         Args:
             pause_time: Time in seconds to pause for rendering.
         """
+        if not self._is_open:
+            return
+
         self.fig.canvas.draw_idle()
         self.fig.canvas.flush_events()
         plt.pause(pause_time)
