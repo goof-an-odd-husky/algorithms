@@ -96,7 +96,6 @@ class SegmentVelocityCost(pyceres.CostFunction):
     def __init__(self, weight: float, max_v: float):
         super().__init__()
         self.weight = weight
-
         self.max_v = max_v
 
         self.set_num_residuals(1)
@@ -105,19 +104,15 @@ class SegmentVelocityCost(pyceres.CostFunction):
     def Evaluate(self, parameters, residuals, jacobians):
         A_x, A_y = parameters[0]
         B_x, B_y = parameters[1]
-
-        s = parameters[2][0]
+        dt = parameters[2][0]
 
         AB_x = B_x - A_x
         AB_y = B_y - A_y
-
         AB_len = np.sqrt(AB_x**2 + AB_y**2 + 1e-10)
 
-        dt_part = np.exp(s)
-        t = DT_MIN + dt_part
-        v = AB_len / t
+        v = AB_len / dt
 
-        weight_factor = 2.0  # todo: move into constant
+        weight_factor = self.weight
         residuals[:] = upper_bound(v, self.max_v, weight_factor)
 
         if jacobians is not None:
@@ -127,28 +122,26 @@ class SegmentVelocityCost(pyceres.CostFunction):
                 if jacobians[1] is not None:
                     jacobians[1][:] = [0.0, 0.0]
                 if jacobians[2] is not None:
-                    jacobians[2][:] = [0.0]
+                    jacobians[2][0] = 0.0
                 return True
 
-            # r = w * (v - max)^2 =>
+            # r = w * (v - max_v)^2
             dr_dv = 2 * weight_factor * (v - self.max_v)
 
-            dr_dv_dv_dl = dr_dv / t
+            scale = dr_dv / (AB_len * dt)
 
             if jacobians[0] is not None:
-                dr_dAx = dr_dv_dv_dl * (-AB_x / AB_len)
-                dr_dAy = dr_dv_dv_dl * (-AB_y / AB_len)
-                jacobians[0][:] = [dr_dAx, dr_dAy]
+                jacobians[0][0] = -AB_x * scale
+                jacobians[0][1] = -AB_y * scale
 
             if jacobians[1] is not None:
-                dr_dBx = dr_dv_dv_dl * (AB_x / AB_len)
-                dr_dBy = dr_dv_dv_dl * (AB_y / AB_len)
-                jacobians[1][:] = [dr_dBx, dr_dBy]
+                jacobians[1][0] = AB_x * scale
+                jacobians[1][1] = AB_y * scale
 
             if jacobians[2] is not None:
-                dv_ds = -(v / t) * dt_part
-                dr_ds = dr_dv * dv_ds
-                jacobians[2][:] = [dr_ds]
+                # dv/dt = -AB_len / dt^2 = -v / dt
+                dv_dt = -v / dt
+                jacobians[2][0] = dr_dv * dv_dt
 
         return True
 
@@ -162,15 +155,12 @@ class SegmentTimeCost(pyceres.CostFunction):
         self.set_parameter_block_sizes([1])
 
     def Evaluate(self, parameters, residuals, jacobians):
-        s = parameters[0][0]
-        dt_part = np.exp(s)
-        t = DT_MIN + dt_part
+        dt = parameters[0][0]
 
-        residuals[:] = self.weight * t
+        residuals[:] = self.weight * dt
 
-        if jacobians is not None:
-            if jacobians[0] is not None:
-                jacobians[0][:] = [self.weight * dt_part]
+        if jacobians is not None and jacobians[0] is not None:
+            jacobians[0][0] = self.weight
 
         return True
 
@@ -246,10 +236,15 @@ class TEBPlanner(TrajectoryPlanner):
 
         return np.hstack((xy, theta, dts))
 
+    def _resize_trajectory(self, min_distance: float, max_distance: float):
+        ...
+
     @override
     def refine(self, iterations: int = 10) -> bool:
         if not self.optimization_xy:
             return False
+
+        self._resize_trajectory(0.1, 2)  # todo: make into constants
 
         problem = pyceres.Problem()
 
@@ -274,9 +269,9 @@ class TEBPlanner(TrajectoryPlanner):
             # theta_curr = self.optimization_theta[i]
 
             problem.add_residual_block(obstacle_cost, None, [xy_curr, xy_next])
-
             problem.add_residual_block(velocity_cost, None, [xy_curr, xy_next, dt])
             problem.add_residual_block(time_cost, None, [dt])
+            problem.set_parameter_lower_bound(dt, 0, DT_MIN)
 
         problem.set_parameter_block_constant(self.optimization_xy[0])
         problem.set_parameter_block_constant(self.optimization_xy[-1])
