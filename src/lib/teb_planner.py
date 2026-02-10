@@ -64,7 +64,8 @@ class SegmentObstaclesCost(pyceres.CostFunction):
 
         errors = self.obstacles_r + self.safety_radius - O1O_len
         mask = errors > 0.0
-        residuals[:] = np.where(mask, self.weight * errors, 0.0)
+        w = self.weight
+        residuals[:] = np.where(mask, w * errors, 0.0)
 
         if jacobians is not None:
             # d_hat = O1O / |O1O|
@@ -73,7 +74,7 @@ class SegmentObstaclesCost(pyceres.CostFunction):
             d_hat_y = O1O_y * inv_dist
 
             # error < 0 => jacobian = 0
-            j_scaler = np.where(mask, self.weight, 0.0)
+            j_scaler = np.where(mask, w, 0.0)
 
             if jacobians[0] is not None:
                 j_A_factor = j_scaler * (1.0 - t)
@@ -112,8 +113,10 @@ class SegmentVelocityCost(pyceres.CostFunction):
 
         v = AB_len / dt
 
-        weight_factor = self.weight
-        residuals[:] = upper_bound(v, self.max_v, weight_factor)
+        w = self.weight
+        residuals[:] = upper_bound(
+            v, self.max_v, w
+        )  # todo: into builtin upper bound? also do angular?
 
         if jacobians is not None:
             if v < self.max_v:
@@ -126,7 +129,7 @@ class SegmentVelocityCost(pyceres.CostFunction):
                 return True
 
             # r = w * (v - max_v)^2
-            dr_dv = 2 * weight_factor * (v - self.max_v)
+            dr_dv = 2 * w * (v - self.max_v)
 
             scale = dr_dv / (AB_len * dt)
 
@@ -146,6 +149,138 @@ class SegmentVelocityCost(pyceres.CostFunction):
         return True
 
 
+class SegmentKinematicsCost(pyceres.CostFunction):
+    def __init__(self, weight: float):
+        super().__init__()
+        self.weight = weight
+
+        self.set_num_residuals(1)
+        self.set_parameter_block_sizes([2, 1, 2, 1])
+
+    def Evaluate(self, parameters, residuals, jacobians):
+        x1, y1 = parameters[0]
+        angle1 = parameters[1][0]
+        x2, y2 = parameters[2]
+        angle2 = parameters[3][0]
+
+        c1, s1 = np.cos(angle1), np.sin(angle1)
+        c2, s2 = np.cos(angle2), np.sin(angle2)
+
+        dx = x2 - x1
+        dy = y2 - y1
+
+        cos_sum = c1 + c2
+        sin_sum = s1 + s2
+
+        error = cos_sum * dy - sin_sum * dx
+
+        w = self.weight
+        residuals[:] = w * error
+
+        if jacobians is not None:
+            w_sin_sum = w * sin_sum
+            w_cos_sum = w * cos_sum
+
+            if jacobians[0] is not None:
+                jacobians[0][:] = [w_sin_sum, -w_cos_sum]
+
+            if jacobians[1] is not None:
+                term = -(dy * s1 + dx * c1)
+                jacobians[1][:] = w * term
+
+            if jacobians[2] is not None:
+                jacobians[2][:] = [-w_sin_sum, w_cos_sum]
+
+            if jacobians[3] is not None:
+                term = -(dy * s2 + dx * c2)
+                jacobians[3][:] = w * term
+
+        return True
+
+
+class SegmentHeadingCost(pyceres.CostFunction):
+    def __init__(self, weight: float):
+        super().__init__()
+        self.weight = weight
+        self.set_num_residuals(1)
+        self.set_parameter_block_sizes([2, 1, 2])
+
+    def Evaluate(self, parameters, residuals, jacobians):
+        x1, y1 = parameters[0]
+        theta1 = parameters[1][0]
+        x2, y2 = parameters[2]
+
+        dx = x2 - x1
+        dy = y2 - y1
+
+        c1, s1 = np.cos(theta1), np.sin(theta1)
+
+        dot = dx * c1 + dy * s1
+
+        if dot >= 0:
+            residuals[0] = 0.0
+            if jacobians is not None:
+                if jacobians[0] is not None:
+                    jacobians[0][:] = 0.0
+                if jacobians[1] is not None:
+                    jacobians[1][:] = 0.0
+                if jacobians[2] is not None:
+                    jacobians[2][:] = 0.0
+            return True
+
+        w = self.weight
+        residuals[0] = w * (-dot)
+
+        if jacobians is not None:
+            if jacobians[0] is not None:
+                jacobians[0][0] = w * c1
+                jacobians[0][1] = w * s1
+
+            if jacobians[1] is not None:
+                jacobians[1][0] = w * (dx * s1 - dy * c1)
+
+            if jacobians[2] is not None:
+                jacobians[2][0] = -w * c1
+                jacobians[2][1] = -w * s1
+
+        return True
+
+
+class SegmentAngularSmoothingCost(pyceres.CostFunction):
+    def __init__(self, weight: float):
+        super().__init__()
+        self.weight = weight
+
+        self.set_num_residuals(1)
+        self.set_parameter_block_sizes([1, 1, 1])
+
+    def Evaluate(self, parameters, residuals, jacobians):
+        theta1 = parameters[0][0]
+        theta2 = parameters[1][0]
+        dt = parameters[2][0]
+
+        delta_theta = (theta2 - theta1 + np.pi) % (2 * np.pi) - np.pi
+
+        omega = delta_theta / dt
+
+        residuals[0] = self.weight * omega
+
+        if jacobians is not None:
+            inv_dt = 1.0 / dt
+            w_inv_dt = self.weight * inv_dt
+
+            if jacobians[0] is not None:
+                jacobians[0][0] = -w_inv_dt
+
+            if jacobians[1] is not None:
+                jacobians[1][0] = w_inv_dt
+
+            if jacobians[2] is not None:
+                jacobians[2][0] = -residuals[0] * inv_dt
+
+        return True
+
+
 class SegmentTimeCost(pyceres.CostFunction):
     def __init__(self, weight: float):
         super().__init__()
@@ -157,10 +292,11 @@ class SegmentTimeCost(pyceres.CostFunction):
     def Evaluate(self, parameters, residuals, jacobians):
         dt = parameters[0][0]
 
-        residuals[:] = self.weight * dt
+        w = self.weight
+        residuals[:] = w * dt
 
         if jacobians is not None and jacobians[0] is not None:
-            jacobians[0][0] = self.weight
+            jacobians[0][0] = w
 
         return True
 
@@ -237,7 +373,24 @@ class TEBPlanner(TrajectoryPlanner):
         return np.hstack((xy, theta, dts))
 
     def _resize_trajectory(self, min_distance: float, max_distance: float):
-        ...
+        min_distance_sq = min_distance**2
+        max_distance_sq = max_distance**2
+        new_xy = [self.start_pose[:2]]
+        new_theta = []
+        new_dt = []
+        accumulated_dt = 0
+
+        for i in range(1, len(self.optimization_xy)):
+            x, y = new_xy[-1]
+            x1, y1 = self.optimization_xy[i]
+            distance = (x1 - x) ** 2 + (y1 - y) ** 2
+            if distance < min_distance_sq and i != len(self.optimization_xy) - 1:
+                accumulated_dt += self.optimization_dt[i]
+                continue
+            if distance > max_distance_sq:
+                new_xy.append(np.array(((x + x1) / 2, (y + y1) / 2)))
+            new_xy.append(np.array((x1, y1)))
+            # todo
 
     @override
     def refine(self, iterations: int = 10) -> bool:
@@ -255,6 +408,15 @@ class TEBPlanner(TrajectoryPlanner):
             weight=10.0,
             max_v=self.max_v,
         )
+        kinematic_cost = SegmentKinematicsCost(
+            weight=10.0,
+        )
+        heading_cost = SegmentHeadingCost(
+            weight=10.0,
+        )
+        angular_smoothing_cost = SegmentAngularSmoothingCost(
+            weight=0.5,
+        )
         time_cost = SegmentTimeCost(
             weight=10.0,
         )
@@ -266,15 +428,27 @@ class TEBPlanner(TrajectoryPlanner):
             xy_next = self.optimization_xy[i + 1]
             dt = self.optimization_dt[i]
 
-            # theta_curr = self.optimization_theta[i]
+            theta_curr = self.optimization_theta[i]
+            theta_next = self.optimization_theta[i + 1]
 
             problem.add_residual_block(obstacle_cost, None, [xy_curr, xy_next])
             problem.add_residual_block(velocity_cost, None, [xy_curr, xy_next, dt])
+            problem.add_residual_block(
+                kinematic_cost, None, [xy_curr, theta_curr, xy_next, theta_next]
+            )
             problem.add_residual_block(time_cost, None, [dt])
+            problem.add_residual_block(
+                heading_cost, None, [xy_curr, theta_curr, xy_next]
+            )
+            problem.add_residual_block(
+                angular_smoothing_cost, None, [theta_curr, theta_next, dt]
+            )
             problem.set_parameter_lower_bound(dt, 0, DT_MIN)
 
         problem.set_parameter_block_constant(self.optimization_xy[0])
         problem.set_parameter_block_constant(self.optimization_xy[-1])
+        problem.set_parameter_block_constant(self.optimization_theta[0])
+        problem.set_parameter_block_constant(self.optimization_theta[-1])
         # problem.set_parameter_block_constant(self.optimization_theta[0])
         # problem.set_parameter_block_constant(self.optimization_theta[-1])
 

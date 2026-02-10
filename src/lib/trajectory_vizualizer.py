@@ -7,8 +7,16 @@ from matplotlib.lines import Line2D
 from matplotlib.collections import PathCollection
 from matplotlib.quiver import Quiver
 from matplotlib.backend_bases import MouseEvent, CloseEvent
-from typing import Optional
 from numpy.typing import NDArray
+from enum import Enum
+
+
+class PathRenderMode(Enum):
+    """Rendering mode for trajectory visualization."""
+
+    STRAIGHT = "straight"
+    ARC = "arc"
+    BOTH = "both"
 
 
 class TEBVisualizer:
@@ -37,20 +45,23 @@ class TEBVisualizer:
     ax: Axes
     obstacles: list[list[float]]
     obstacle_radius: float
-    start_pos: Optional[NDArray[np.floating]]
-    goal_pos: Optional[NDArray[np.floating]]
+    start_pos: NDArray[np.floating] | None
+    goal_pos: NDArray[np.floating] | None
     path_line: Line2D
+    path_line_straight: Line2D | None
     start_scatter: PathCollection
     goal_scatter: PathCollection
     obstacle_patches: list[patches.Circle]
-    quiver: Optional[Quiver]
+    quiver: Quiver | None
     cid: int
+    path_render_mode: PathRenderMode
 
     def __init__(
         self,
         x_lim: tuple[float, float] = (0, 10),
         y_lim: tuple[float, float] = (0, 10),
         title: str = "TEB Optimization",
+        path_render_mode: PathRenderMode | str = PathRenderMode.STRAIGHT,
     ) -> None:
         """Initialize the visualizer with specified plot dimensions.
 
@@ -58,8 +69,13 @@ class TEBVisualizer:
             x_lim: X-axis limits as (min, max) tuple.
             y_lim: Y-axis limits as (min, max) tuple.
             title: Title for the plot window.
+            path_render_mode: How to render trajectory paths - "straight", "arc", or "both".
         """
-        self._is_open = True  # Track window state
+        self._is_open = True
+
+        if isinstance(path_render_mode, str):
+            path_render_mode = PathRenderMode(path_render_mode)
+        self.path_render_mode = path_render_mode
 
         self.fig, self.ax = plt.subplots(figsize=(10, 6))
         self.ax.set_title(
@@ -75,9 +91,20 @@ class TEBVisualizer:
         self.start_pos = None
         self.goal_pos = None
 
+        if self.path_render_mode == PathRenderMode.STRAIGHT:
+            line_style = "b.-"
+        else:
+            line_style = "b-"
+
         (self.path_line,) = self.ax.plot(
-            [], [], "b.-", alpha=0.6, linewidth=1, label="Trajectory"
+            [], [], line_style, alpha=1.0, linewidth=1, label="Trajectory"
         )
+        self.path_line_straight = None
+        if self.path_render_mode == PathRenderMode.BOTH:
+            (self.path_line_straight,) = self.ax.plot(
+                [], [], "b:", alpha=0.7, linewidth=1
+            )
+
         self.start_scatter = self.ax.scatter(
             [], [], color="green", marker="s", s=100, label="Start", zorder=5
         )
@@ -120,17 +147,25 @@ class TEBVisualizer:
         self.start_scatter.set_offsets([self.start_pos[:2]])
         self.goal_scatter.set_offsets([self.goal_pos[:2]])
 
-    def update_trajectory(self, poses: Optional[NDArray[np.floating]]) -> None:
+    def update_trajectory(self, poses: NDArray[np.floating] | None) -> None:
         """Update the displayed trajectory with new poses.
 
         Args:
-            poses: Nx3 numpy array where each row is [x, y, theta].
+            poses: Nx4 numpy array where each row is [x, y, theta, dt].
                   Returns early if None or empty.
         """
         if poses is None or len(poses) == 0:
             return
 
-        self.path_line.set_data(poses[:, 0], poses[:, 1])
+        if self.path_render_mode == PathRenderMode.STRAIGHT:
+            self.path_line.set_data(poses[:, 0], poses[:, 1])
+        elif self.path_render_mode == PathRenderMode.ARC:
+            arc_x, arc_y = self._compute_arc_path(poses)
+            self.path_line.set_data(arc_x, arc_y)
+        else:
+            self.path_line_straight.set_data(poses[:, 0], poses[:, 1])
+            arc_x, arc_y = self._compute_arc_path(poses)
+            self.path_line.set_data(arc_x, arc_y)
 
         if self.quiver:
             self.quiver.remove()
@@ -145,9 +180,85 @@ class TEBVisualizer:
             color="blue",
             scale=20,
             width=0.003,
-            alpha=0.8,
+            alpha=0.5,
             zorder=4,
         )
+
+    def _compute_arc_path(
+        self, poses: NDArray[np.floating], points_per_arc: int = 20
+    ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+        """Compute arc path that respects heading constraints between consecutive poses.
+
+        Args:
+            poses: Nx4 array of [x, y, theta, dt] poses.
+            points_per_arc: Number of points to use for each arc segment.
+
+        Returns:
+            Tuple of (x_coords, y_coords) arrays for the complete arc path.
+        """
+        if len(poses) < 2:
+            return poses[:, 0], poses[:, 1]
+
+        all_x = []
+        all_y = []
+
+        for i in range(len(poses) - 1):
+            x1, y1, theta1, _ = poses[i]
+            x2, y2, theta2, _ = poses[i + 1]
+
+            arc_x, arc_y = self._compute_single_arc(
+                x1, y1, theta1, x2, y2, theta2, points_per_arc
+            )
+            all_x.extend(arc_x)
+            all_y.extend(arc_y)
+
+        return np.array(all_x), np.array(all_y)
+
+    def _compute_single_arc(
+        self,
+        x1: float,
+        y1: float,
+        theta1: float,
+        x2: float,
+        y2: float,
+        theta2: float,
+        num_points: int,
+    ) -> tuple[list[float], list[float]]:
+        """Compute a single arc segment between two poses using cubic Bezier curve.
+
+        Args:
+            x1, y1, theta1: Start pose coordinates and heading.
+            x2, y2, theta2: End pose coordinates and heading.
+            num_points: Number of points to generate along the arc.
+
+        Returns:
+            Tuple of (x_coords, y_coords) for the arc segment.
+        """
+        distance = np.hypot(x2 - x1, y2 - y1)
+        control_distance = distance / 3.0
+
+        control1_x = x1 + control_distance * np.cos(theta1)
+        control1_y = y1 + control_distance * np.sin(theta1)
+
+        control2_x = x2 - control_distance * np.cos(theta2)
+        control2_y = y2 - control_distance * np.sin(theta2)
+
+        t = np.linspace(0, 1, num_points)
+        t = t.reshape(-1, 1)
+
+        bezier_matrix = (
+            np.array([(1 - t) ** 3, 3 * (1 - t) ** 2 * t, 3 * (1 - t) * t**2, t**3])
+            .squeeze()
+            .T
+        )
+
+        control_points_x = np.array([x1, control1_x, control2_x, x2])
+        control_points_y = np.array([y1, control1_y, control2_y, y2])
+
+        arc_x = (bezier_matrix @ control_points_x).tolist()
+        arc_y = (bezier_matrix @ control_points_y).tolist()
+
+        return arc_x, arc_y
 
     def get_obstacles(self) -> NDArray[np.floating]:
         """Get all obstacles in the environment.
