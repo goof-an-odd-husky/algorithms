@@ -19,7 +19,7 @@ class PathRenderMode(Enum):
     BOTH = "both"
 
 
-class TEBVisualizer:
+class TrajectoryVisualizer:
     """Interactive visualizer for Timed Elastic Band (TEB) trajectory optimization.
 
     Provides a matplotlib-based interface for visualizing robot trajectories with

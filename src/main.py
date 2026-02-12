@@ -1,9 +1,14 @@
 from lib.teb_planner import TEBPlanner
-from lib.trajectory_vizualizer import TEBVisualizer
+from lib.trajectory_vizualizer import TrajectoryVisualizer
 
 
 def main():
-    vizualizer = TEBVisualizer(x_lim=(0, 10), y_lim=(0, 10), path_render_mode="both", interactive_obstacles=False)
+    vizualizer = TrajectoryVisualizer(
+        x_lim=(0, 10),
+        y_lim=(0, 10),
+        path_render_mode="both",
+        interactive_obstacles=False,
+    )
 
     start = [1.0, 1.0, 0.0]
     goal = [9.0, 9.0, 1.57]
@@ -21,10 +26,10 @@ def main():
             i += 1
             detected_obstacles = [
                 [5.0, 5.0, 1.0],
-                [3.0 + i*0.05, 3.0, 0.5],
-                [6.0, 2.0]
+                [3.0 + i * 0.05, 3.0, 0.5],
+                [6.0, 2.0],
             ]
-            
+
             vizualizer.set_obstacles(detected_obstacles)
 
             obstacle_data = vizualizer.get_obstacles()
