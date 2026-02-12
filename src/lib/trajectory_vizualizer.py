@@ -39,6 +39,8 @@ class TEBVisualizer:
         obstacle_patches: List of Circle patches for obstacle visualization.
         quiver: Quiver object for orientation arrows.
         cid: Connection ID for mouse click callback.
+        interactive_obstacles: If True, enables mouse interaction. If False,
+                               obstacles must be set via set_obstacles().
     """
 
     fig: Figure
@@ -55,6 +57,7 @@ class TEBVisualizer:
     quiver: Quiver | None
     cid: int
     path_render_mode: PathRenderMode
+    interactive_obstacles: bool
 
     def __init__(
         self,
@@ -62,6 +65,7 @@ class TEBVisualizer:
         y_lim: tuple[float, float] = (0, 10),
         title: str = "TEB Optimization",
         path_render_mode: PathRenderMode | str = PathRenderMode.STRAIGHT,
+        interactive_obstacles: bool = True,
     ) -> None:
         """Initialize the visualizer with specified plot dimensions.
 
@@ -70,17 +74,23 @@ class TEBVisualizer:
             y_lim: Y-axis limits as (min, max) tuple.
             title: Title for the plot window.
             path_render_mode: How to render trajectory paths - "straight", "arc", or "both".
+            interactive_obstacles: Enable/Disable mouse click interaction.
         """
         self._is_open = True
+        self.interactive_obstacles = interactive_obstacles
 
         if isinstance(path_render_mode, str):
             path_render_mode = PathRenderMode(path_render_mode)
         self.path_render_mode = path_render_mode
 
         self.fig, self.ax = plt.subplots(figsize=(10, 6))
-        self.ax.set_title(
-            f"{title}\nLeft Click: Add Obstacle | Right Click: Remove Obstacle"
-        )
+
+        if self.interactive_obstacles:
+            controls = "\nLeft Click: Add Obstacle | Right Click: Remove Obstacle"
+        else:
+            controls = "\n(System Controlled Obstacles)"
+
+        self.ax.set_title(f"{title}{controls}")
         self.ax.set_xlim(x_lim)
         self.ax.set_ylim(y_lim)
         self.ax.set_aspect("equal")
@@ -147,9 +157,35 @@ class TEBVisualizer:
         self.start_scatter.set_offsets([self.start_pos[:2]])
         self.goal_scatter.set_offsets([self.goal_pos[:2]])
 
+    def set_obstacles(
+        self, obstacles: list[list[float]] | NDArray[np.floating]
+    ) -> None:
+        """Programmatically set the list of obstacles.
+
+        Args:
+            obstacles: List of [x, y] or [x, y, radius].
+                      If radius is omitted, uses self.obstacle_radius.
+        """
+        if not self._is_open:
+            return
+
+        for patch in self.obstacle_patches:
+            patch.remove()
+        self.obstacle_patches.clear()
+        self.obstacles.clear()
+
+        for obs in obstacles:
+            x, y = float(obs[0]), float(obs[1])
+            if len(obs) >= 3:
+                r = float(obs[2])
+            else:
+                r = self.obstacle_radius
+
+            self.obstacles.append([x, y, r])
+            self._add_obstacle_patch(x, y, r)
+
     def update_trajectory(self, poses: NDArray[np.floating] | None) -> None:
         """Update the displayed trajectory with new poses.
-
         Args:
             poses: Nx4 numpy array where each row is [x, y, theta, dt].
                   Returns early if None or empty.
@@ -290,6 +326,9 @@ class TEBVisualizer:
         Args:
             event: MouseEvent from matplotlib containing click information.
         """
+        if not self.interactive_obstacles:
+            return
+
         if event.inaxes != self.ax:
             return
 
