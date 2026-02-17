@@ -47,8 +47,8 @@ class TrajectoryVisualizer:
     ax: Axes
     obstacles: list[list[float]]
     obstacle_radius: float
-    start_pos: NDArray[np.floating] | None
-    goal_pos: NDArray[np.floating] | None
+    start_pos: NDArray[np.floating]
+    goal_pos: NDArray[np.floating]
     path_line: Line2D
     path_line_straight: Line2D | None
     start_scatter: PathCollection
@@ -337,6 +337,9 @@ class TrajectoryVisualizer:
         if event.button == 1:
             self.obstacles.append([x, y, self.obstacle_radius])
             self._add_obstacle_patch(x, y, self.obstacle_radius)
+
+        elif event.button == 2:
+            self.set_start_goal([x, y, self.start_pos[2]], self.goal_pos)
 
         elif event.button == 3:
             self._remove_nearest_obstacle(x, y)

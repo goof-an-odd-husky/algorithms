@@ -372,25 +372,55 @@ class TEBPlanner(TrajectoryPlanner):
 
         return np.hstack((xy, theta, dts))
 
-    def _resize_trajectory(self, min_distance: float, max_distance: float):
-        min_distance_sq = min_distance**2
-        max_distance_sq = max_distance**2
-        new_xy = [self.start_pose[:2]]
-        new_theta = []
-        new_dt = []
-        accumulated_dt = 0
+    def _resize_trajectory(self, min_distance: float, max_distance: float): ...  # todo
 
-        for i in range(1, len(self.optimization_xy)):
-            x, y = new_xy[-1]
-            x1, y1 = self.optimization_xy[i]
-            distance = (x1 - x) ** 2 + (y1 - y) ** 2
-            if distance < min_distance_sq and i != len(self.optimization_xy) - 1:
-                accumulated_dt += self.optimization_dt[i]
-                continue
-            if distance > max_distance_sq:
-                new_xy.append(np.array(((x + x1) / 2, (y + y1) / 2)))
-            new_xy.append(np.array((x1, y1)))
-            # todo
+    def move_start_goal(
+        self, new_xy, new_theta, min_distance: float, max_distance: float
+    ) -> None:
+        """
+        Move the start goal (and possibly remove, based on distance to the next point).
+
+        If distance(new_xy, point_1) > min_distance: updates point 0 in-place.
+        Otherwise: removes point 0 and promotes point 1 to start.
+
+        Args:
+            new_xy: np.array of shape (2,) - new start position [x, y]
+            new_theta: np.array of shape (1,) or scalar - new start heading
+            min_distance: float - distance threshold to remove a point
+            max_distance: float - distance threshold to create a point
+        """
+        if not self.optimization_xy:
+            return
+
+        new_xy = np.asarray(new_xy).reshape(2)
+        new_theta = np.asarray(new_theta).reshape(1)
+
+        if len(self.optimization_xy) <= 2:
+            self.optimization_xy[0][:] = new_xy
+            self.optimization_theta[0][:] = new_theta
+            return
+
+        distance = np.linalg.norm(new_xy - self.optimization_xy[1])
+
+        if distance < min_distance:
+            self.optimization_xy.pop(0)
+            self.optimization_theta.pop(0)
+            if self.optimization_dt:
+                self.optimization_dt.pop(0)
+            return
+        self.optimization_xy[0][:] = new_xy
+        self.optimization_theta[0][:] = new_theta
+        if distance > max_distance:
+            point1_xy = self.optimization_xy[1]
+            self.optimization_xy.insert(1, np.array([(new_xy[0] + point1_xy[0]) / 2, (new_xy[1] + point1_xy[1]) / 2]))
+
+            point1_theta = self.optimization_theta[1]
+            diff = (point1_theta - new_theta + np.pi) % (2 * np.pi) - np.pi
+            mean_theta = (new_theta + diff / 2) % (2 * np.pi)
+            self.optimization_theta.insert(1, mean_theta)
+            half_dt = self.optimization_dt[0] / 2
+            self.optimization_dt[0] = half_dt
+            self.optimization_dt.insert(1, half_dt)
 
     @override
     def refine(self, iterations: int = 10) -> bool:
